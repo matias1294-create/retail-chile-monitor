@@ -52,7 +52,6 @@ jobs:
 
           MAX_CONCURRENCY: "3"
           MAX_CANDIDATES_PER_STORE: "220"
-
           PAGE_TIMEOUT_MS: "35000"
           SCROLL_ROUNDS: "4"
 
