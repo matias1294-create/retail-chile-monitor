@@ -1,0 +1,116 @@
+{
+  "stores": [
+    {
+      "name": "Falabella",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.falabella.com/falabella-cl/collection/ofertas"
+      ],
+      "allowed_domains": [
+        "falabella.com"
+      ],
+      "product_url_regex": "/falabella-cl/product/"
+    },
+    {
+      "name": "Ripley",
+      "enabled": true,
+      "seed_urls": [
+        "https://simple.ripley.cl/"
+      ],
+      "allowed_domains": [
+        "simple.ripley.cl"
+      ],
+      "product_url_regex": "\\d{8,16}p$"
+    },
+    {
+      "name": "ABC",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.abc.cl/"
+      ],
+      "allowed_domains": [
+        "abc.cl"
+      ],
+      "product_url_regex": "/\\d{7,16}\\.html$"
+    },
+    {
+      "name": "Paris",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.paris.cl/"
+      ],
+      "allowed_domains": [
+        "paris.cl"
+      ],
+      "product_url_regex": "\\.html$"
+    },
+    {
+      "name": "Hites",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.hites.com/"
+      ],
+      "allowed_domains": [
+        "hites.com"
+      ],
+      "product_url_regex": "\\.html$"
+    },
+    {
+      "name": "Easy",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.easy.cl/Ofertas/Outlet"
+      ],
+      "allowed_domains": [
+        "easy.cl"
+      ],
+      "product_url_regex": "/p$|/producto/|/product/"
+    },
+    {
+      "name": "Sodimac",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.sodimac.cl/sodimac-cl/seleccion/ofertas"
+      ],
+      "allowed_domains": [
+        "sodimac.cl",
+        "sodimac.falabella.com"
+      ],
+      "product_url_regex": "/product/"
+    },
+    {
+      "name": "Lider",
+      "enabled": true,
+      "seed_urls": [
+        "https://super.lider.cl/v/ofertas"
+      ],
+      "allowed_domains": [
+        "super.lider.cl"
+      ],
+      "product_url_regex": "/ip/"
+    },
+    {
+      "name": "Mercado Libre Chile",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.mercadolibre.cl/ofertas"
+      ],
+      "allowed_domains": [
+        "mercadolibre.cl",
+        "articulo.mercadolibre.cl"
+      ],
+      "product_url_regex": "/p/MLC|/MLC-\\d+"
+    },
+    {
+      "name": "PC Factory",
+      "enabled": true,
+      "seed_urls": [
+        "https://www.pcfactory.cl/"
+      ],
+      "allowed_domains": [
+        "pcfactory.cl"
+      ],
+      "product_url_regex": "/producto/|/product/"
+    }
+  ]
+}
