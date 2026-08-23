@@ -55,7 +55,7 @@ jobs:
           PAGE_TIMEOUT_MS: "30000"
           SCROLL_ROUNDS: "3"
 
-        run: python monitor.py
+        run: python monitor_fixed.py
 
       - name: Save price state
         if: always()
