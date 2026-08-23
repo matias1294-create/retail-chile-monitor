@@ -35,7 +35,16 @@ jobs:
           key: price-state-${{ github.run_id }}
           restore-keys: |
             price-state-
-
+      - name: Test Telegram
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=✅ Prueba OK: Monitor Retail Chile conectado a Telegram"
       - name: Install dependencies
         run: |
           python -m pip install -r requirements.txt
