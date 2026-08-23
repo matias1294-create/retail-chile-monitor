@@ -2,20 +2,21 @@ name: Monitor Retail Chile
 
 on:
   workflow_dispatch: {}
+
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
 
 permissions:
   contents: read
 
 concurrency:
   group: retail-price-monitor
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -31,7 +32,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: state/prices.json
-          key: price-state-${{ github.run_id }}-${{ github.run_attempt }}
+          key: price-state-${{ github.run_id }}
           restore-keys: |
             price-state-
 
@@ -44,13 +45,16 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
           DISCOUNT_THRESHOLD: "70"
           TECH_THRESHOLD: "60"
           BRAND_THRESHOLD: "50"
-          MAX_CONCURRENCY: "3"
+
+          MAX_CONCURRENCY: "4"
           MAX_CANDIDATES_PER_STORE: "220"
-          PAGE_TIMEOUT_MS: "35000"
-          SCROLL_ROUNDS: "4"
+          PAGE_TIMEOUT_MS: "30000"
+          SCROLL_ROUNDS: "3"
+
         run: python monitor.py
 
       - name: Save price state
@@ -58,4 +62,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: state/prices.json
-          key: price-state-${{ github.run_id }}-${{ github.run_attempt }}
+          key: price-state-${{ github.run_id }}
