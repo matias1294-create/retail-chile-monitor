@@ -200,4 +200,255 @@
         "https://www.hp.com/cl-es/shop/"
       ],
       "allowed_domains": [
-        "
+        "hp.com"
+      ]
+    },
+    {
+      "name": "Guess Chile",
+      "enabled": true,
+      "category": "moda_carteras_accesorios",
+      "seed_urls": [
+        "https://www.guess.cl/"
+      ],
+      "allowed_domains": [
+        "guess.cl"
+      ]
+    },
+    {
+      "name": "Calvin Klein Chile",
+      "enabled": true,
+      "category": "moda",
+      "seed_urls": [
+        "https://www.calvinklein.cl/"
+      ],
+      "allowed_domains": [
+        "calvinklein.cl"
+      ]
+    },
+    {
+      "name": "Tommy Hilfiger Chile",
+      "enabled": true,
+      "category": "moda",
+      "seed_urls": [
+        "https://cl.tommy.com/"
+      ],
+      "allowed_domains": [
+        "cl.tommy.com",
+        "tommy.com"
+      ]
+    },
+    {
+      "name": "Saxoline",
+      "enabled": true,
+      "category": "carteras_accesorios",
+      "seed_urls": [
+        "https://saxoline.cl/"
+      ],
+      "allowed_domains": [
+        "saxoline.cl"
+      ]
+    },
+    {
+      "name": "DBS Beauty Store",
+      "enabled": true,
+      "category": "cosmetica_belleza",
+      "seed_urls": [
+        "https://dbs.cl/"
+      ],
+      "allowed_domains": [
+        "dbs.cl"
+      ]
+    },
+    {
+      "name": "Preunic",
+      "enabled": true,
+      "category": "cosmetica_belleza",
+      "seed_urls": [
+        "https://www.preunic.cl/"
+      ],
+      "allowed_domains": [
+        "preunic.cl"
+      ]
+    },
+    {
+      "name": "Maicao",
+      "enabled": true,
+      "category": "cosmetica_belleza",
+      "seed_urls": [
+        "https://www.maicao.cl/"
+      ],
+      "allowed_domains": [
+        "maicao.cl"
+      ]
+    },
+    {
+      "name": "Natura Chile",
+      "enabled": true,
+      "category": "cosmetica_belleza",
+      "seed_urls": [
+        "https://www.natura.cl/"
+      ],
+      "allowed_domains": [
+        "natura.cl"
+      ]
+    },
+    {
+      "name": "The Body Shop Chile",
+      "enabled": true,
+      "category": "cosmetica_belleza",
+      "seed_urls": [
+        "https://thebodyshop.cl/"
+      ],
+      "allowed_domains": [
+        "thebodyshop.cl"
+      ]
+    },
+    {
+      "name": "MAC Cosmetics Chile",
+      "enabled": true,
+      "category": "maquillaje_cosmetica",
+      "seed_urls": [
+        "https://www.maccosmetics.cl/"
+      ],
+      "allowed_domains": [
+        "maccosmetics.cl"
+      ]
+    },
+    {
+      "name": "Clinique Chile",
+      "enabled": true,
+      "category": "cosmetica_skincare",
+      "seed_urls": [
+        "https://www.clinique.cl/"
+      ],
+      "allowed_domains": [
+        "clinique.cl"
+      ]
+    },
+    {
+      "name": "Estee Lauder Chile",
+      "enabled": true,
+      "category": "cosmetica_skincare",
+      "seed_urls": [
+        "https://www.esteelauder.cl/"
+      ],
+      "allowed_domains": [
+        "esteelauder.cl"
+      ]
+    },
+    {
+      "name": "Kiehls Chile",
+      "enabled": true,
+      "category": "skincare",
+      "seed_urls": [
+        "https://www.kiehls.cl/"
+      ],
+      "allowed_domains": [
+        "kiehls.cl"
+      ]
+    },
+    {
+      "name": "Lancome Chile",
+      "enabled": true,
+      "category": "cosmetica_skincare",
+      "seed_urls": [
+        "https://www.lancome.cl/"
+      ],
+      "allowed_domains": [
+        "lancome.cl"
+      ]
+    },
+    {
+      "name": "Easy",
+      "enabled": true,
+      "category": "hogar_muebles",
+      "seed_urls": [
+        "https://www.easy.cl/Ofertas/Outlet"
+      ],
+      "allowed_domains": [
+        "easy.cl"
+      ],
+      "product_url_regex": "/p$|/producto/|/product/"
+    },
+    {
+      "name": "Sodimac",
+      "enabled": true,
+      "category": "hogar_muebles",
+      "seed_urls": [
+        "https://www.sodimac.cl/sodimac-cl/seleccion/ofertas"
+      ],
+      "allowed_domains": [
+        "sodimac.cl",
+        "sodimac.falabella.com"
+      ],
+      "product_url_regex": "/product/"
+    },
+    {
+      "name": "IKEA Chile",
+      "enabled": true,
+      "category": "muebles_hogar",
+      "seed_urls": [
+        "https://www.ikea.com/cl/es/"
+      ],
+      "allowed_domains": [
+        "ikea.com"
+      ]
+    },
+    {
+      "name": "Rosen",
+      "enabled": true,
+      "category": "camas_colchones_muebles",
+      "seed_urls": [
+        "https://www.rosen.cl/"
+      ],
+      "allowed_domains": [
+        "rosen.cl"
+      ]
+    },
+    {
+      "name": "CIC",
+      "enabled": true,
+      "category": "camas_colchones_muebles",
+      "seed_urls": [
+        "https://www.cic.cl/"
+      ],
+      "allowed_domains": [
+        "cic.cl"
+      ]
+    },
+    {
+      "name": "Casaideas",
+      "enabled": true,
+      "category": "hogar_decoracion",
+      "seed_urls": [
+        "https://www.casaideas.cl/"
+      ],
+      "allowed_domains": [
+        "casaideas.cl"
+      ]
+    },
+    {
+      "name": "Cannon Home",
+      "enabled": true,
+      "category": "ropa_cama_hogar",
+      "seed_urls": [
+        "https://www.cannonhome.cl/"
+      ],
+      "allowed_domains": [
+        "cannonhome.cl"
+      ]
+    },
+    {
+      "name": "Lider",
+      "enabled": true,
+      "category": "supermercado_hogar_tecnologia",
+      "seed_urls": [
+        "https://super.lider.cl/v/ofertas"
+      ],
+      "allowed_domains": [
+        "super.lider.cl"
+      ],
+      "product_url_regex": "/ip/"
+    }
+  ]
+}
