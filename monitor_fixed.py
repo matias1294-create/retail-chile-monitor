@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import re
 import unicodedata
 import urllib.parse
@@ -10,6 +11,18 @@ import monitor as core
 _original_valid = core.valid_product_url
 _original_parse = core.parse_candidate
 _original_telegram = core.telegram_send
+_original_alert_reason = core.alert_reason
+
+
+REPEAT_ALERTS = os.getenv(
+    "REPEAT_ALERTS",
+    "false"
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 BAD_URL_PARTS = (
@@ -97,6 +110,21 @@ STOP_WORDS = {
 }
 
 
+# PERFUMES BLOQUEADOS
+PERFUME_TERMS = (
+    "perfume",
+    "perfumes",
+    "parfum",
+    "eau de parfum",
+    "eau de toilette",
+    "edp",
+    "edt",
+    "fragancia",
+    "fragancias",
+    "colonia",
+)
+
+
 def normalize(value):
     value = unicodedata.normalize(
         "NFKD",
@@ -124,8 +152,53 @@ def normalize(value):
     ).strip()
 
 
-def strict_product_url(url, cfg):
+def contains_phrase(
+    value,
+    phrases,
+):
+    padded = (
+        f" {normalize(value)} "
+    )
 
+    for phrase in phrases:
+        normalized_phrase = normalize(
+            phrase
+        )
+
+        if (
+            normalized_phrase
+            and
+            f" {normalized_phrase} "
+            in padded
+        ):
+            return True
+
+    return False
+
+
+def is_perfume_product(
+    store,
+    href,
+    anchor_text,
+    card_text,
+):
+    return contains_phrase(
+        " ".join(
+            [
+                str(store or ""),
+                str(href or ""),
+                str(anchor_text or ""),
+                str(card_text or ""),
+            ]
+        ),
+        PERFUME_TERMS,
+    )
+
+
+def strict_product_url(
+    url,
+    cfg,
+):
     if not _original_valid(
         url,
         cfg,
@@ -140,7 +213,10 @@ def strict_product_url(url, cfg):
         parsed.path or ""
     ).lower().rstrip("/")
 
-    if not path or path == "/":
+    if (
+        not path
+        or path == "/"
+    ):
         return False
 
     if any(
@@ -149,9 +225,11 @@ def strict_product_url(url, cfg):
     ):
         return False
 
-    # Si stores.json ya tiene patrón específico,
-    # confiamos en ese patrón.
-    if cfg.get("product_url_regex"):
+    # Si stores.json tiene regex,
+    # confiamos en ella.
+    if cfg.get(
+        "product_url_regex"
+    ):
         return True
 
     if any(
@@ -190,6 +268,15 @@ def strict_parse_candidate(
     card_text,
     category=None,
 ):
+    # Bloqueo de perfumes antes
+    # de procesar el producto.
+    if is_perfume_product(
+        store,
+        href,
+        anchor_text,
+        card_text,
+    ):
+        return None
 
     anchor = normalize(
         anchor_text
@@ -209,8 +296,8 @@ def strict_parse_candidate(
         raw
     )
 
-    # Evitar que tome secciones completas
-    # de la página como un producto.
+    # Evita que una sección completa
+    # sea interpretada como producto.
     if len(raw) > 1200:
         return None
 
@@ -235,10 +322,11 @@ def strict_parse_candidate(
 
     prices = []
 
-    for raw_price in core.PRICE_RE.findall(
-        raw
+    for raw_price in (
+        core.PRICE_RE.findall(
+            raw
+        )
     ):
-
         price = core.price_int(
             raw_price
         )
@@ -254,6 +342,9 @@ def strict_parse_candidate(
     if not prices:
         return None
 
+    # Muchas cifras generalmente
+    # significa que tomamos una sección
+    # completa y no una tarjeta.
     if len(prices) > 7:
         return None
 
@@ -281,16 +372,103 @@ def strict_parse_candidate(
     ):
         return None
 
+    if contains_phrase(
+        product.name,
+        PERFUME_TERMS,
+    ):
+        return None
+
     return product
 
 
-async def verify_direct_url_relaxed(
+def fixed_find_watched_brand(
+    product,
+    brand_watchlist,
+):
+    """
+    Corrige el falso positivo:
+    MAC ya NO coincide con
+    MacBook o MacOnline.
+    """
+
+    haystack = normalize(
+        " ".join(
+            [
+                product.name,
+                product.raw_text,
+                product.url,
+                product.store,
+            ]
+        )
+    )
+
+    padded = (
+        f" {haystack} "
+    )
+
+    brands = sorted(
+        brand_watchlist,
+        key=lambda x: len(
+            normalize(x)
+        ),
+        reverse=True,
+    )
+
+    for brand in brands:
+        normalized_brand = normalize(
+            brand
+        )
+
+        if not normalized_brand:
+            continue
+
+        if (
+            f" {normalized_brand} "
+            in padded
+        ):
+            return brand
+
+    return None
+
+
+def repeat_alert_reason(
+    product,
+    previous,
+):
+    should_alert, metadata = (
+        _original_alert_reason(
+            product,
+            previous,
+        )
+    )
+
+    # Si sigue cumpliendo el descuento,
+    # vuelve a avisar en la próxima
+    # ejecución de 5 minutos.
+    if (
+        REPEAT_ALERTS
+        and metadata.get(
+            "published_match"
+        )
+    ):
+        should_alert = True
+
+    metadata[
+        "repeat_alerts"
+    ] = REPEAT_ALERTS
+
+    return (
+        should_alert,
+        metadata,
+    )
+
+
+async def verify_direct_url_strict(
     browser,
     product,
     cfg,
     semaphore,
 ):
-
     if not strict_product_url(
         product.url,
         cfg,
@@ -298,27 +476,33 @@ async def verify_direct_url_relaxed(
         return False
 
     async with semaphore:
-
-        context = await browser.new_context(
-            locale="es-CL",
-            user_agent=(
-                "Mozilla/5.0 "
-                "(X11; Linux x86_64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/126.0.0.0 "
-                "Safari/537.36"
-            ),
+        context = (
+            await browser.new_context(
+                locale="es-CL",
+                user_agent=(
+                    "Mozilla/5.0 "
+                    "(X11; Linux x86_64) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/126.0.0.0 "
+                    "Safari/537.36"
+                ),
+            )
         )
 
-        page = await context.new_page()
+        page = (
+            await context.new_page()
+        )
 
         try:
-
             response = await page.goto(
                 product.url,
-                wait_until="domcontentloaded",
-                timeout=core.PAGE_TIMEOUT_MS,
+                wait_until=(
+                    "domcontentloaded"
+                ),
+                timeout=(
+                    core.PAGE_TIMEOUT_MS
+                ),
             )
 
             if (
@@ -328,20 +512,24 @@ async def verify_direct_url_relaxed(
                 return False
 
             await page.wait_for_timeout(
-                1500
+                1200
             )
 
             try:
-                body = await page.locator(
-                    "body"
-                ).inner_text(
-                    timeout=8000
+                body = (
+                    await page.locator(
+                        "body"
+                    ).inner_text(
+                        timeout=8000
+                    )
                 )
             except Exception:
                 body = ""
 
             try:
-                title = await page.title()
+                title = (
+                    await page.title()
+                )
             except Exception:
                 title = ""
 
@@ -394,23 +582,26 @@ async def verify_direct_url_relaxed(
 
             price_ok = any(
                 variant in combined_raw
-                for variant in price_variants
+                for variant
+                in price_variants
             )
 
             words = [
                 word
-                for word
-                in normalize(
+                for word in normalize(
                     product.name
                 ).split()
                 if (
                     len(word) >= 4
-                    and word not in STOP_WORDS
+                    and word
+                    not in STOP_WORDS
                 )
             ]
 
             words = list(
-                dict.fromkeys(words)
+                dict.fromkeys(
+                    words
+                )
             )[:8]
 
             matches = sum(
@@ -427,34 +618,30 @@ async def verify_direct_url_relaxed(
                 )
             )
 
-            # IMPORTANTE:
-            # precio O nombre, no ambos obligatorios
+            # AHORA EXIGE LAS DOS:
+            # precio correcto Y nombre.
             verified = (
                 price_ok
-                or name_ok
+                and name_ok
             )
 
-            if verified:
-                print(
-                    "VERIFY OK:",
-                    product.store,
-                    product.name[:90],
-                    "| precio:",
-                    price_ok,
-                    "| nombre:",
-                    name_ok,
-                )
-            else:
-                print(
-                    "VERIFY FAIL:",
-                    product.store,
-                    product.name[:90],
-                )
+            print(
+                (
+                    "VERIFY OK:"
+                    if verified
+                    else "VERIFY FAIL:"
+                ),
+                product.store,
+                product.name[:90],
+                "| precio:",
+                price_ok,
+                "| nombre:",
+                name_ok,
+            )
 
             return verified
 
         except Exception as error:
-
             print(
                 "VERIFY ERROR:",
                 product.store,
@@ -465,28 +652,28 @@ async def verify_direct_url_relaxed(
             return False
 
         finally:
-
             await context.close()
 
 
-def telegram_verbose(text):
-
-    result = _original_telegram(
-        text
+def telegram_verbose(
+    text,
+):
+    result = (
+        _original_telegram(
+            text
+        )
     )
 
-    if result:
-        print(
-            "✅ TELEGRAM ENVIADO"
-        )
-    else:
-        print(
-            "❌ TELEGRAM NO ENVIADO"
-        )
+    print(
+        "✅ TELEGRAM ENVIADO"
+        if result
+        else "❌ TELEGRAM NO ENVIADO"
+    )
 
     return result
 
 
+# Aplicar correcciones al monitor principal.
 core.valid_product_url = (
     strict_product_url
 )
@@ -495,8 +682,16 @@ core.parse_candidate = (
     strict_parse_candidate
 )
 
+core.find_watched_brand = (
+    fixed_find_watched_brand
+)
+
+core.alert_reason = (
+    repeat_alert_reason
+)
+
 core.verify_direct_url = (
-    verify_direct_url_relaxed
+    verify_direct_url_strict
 )
 
 core.telegram_send = (
@@ -505,9 +700,17 @@ core.telegram_send = (
 
 
 if __name__ == "__main__":
-
     print(
         "✅ Monitor fixed activo"
+    )
+
+    print(
+        "🔁 Repetir alertas:",
+        REPEAT_ALERTS,
+    )
+
+    print(
+        "🚫 Perfumes: bloqueados"
     )
 
     core.main()
