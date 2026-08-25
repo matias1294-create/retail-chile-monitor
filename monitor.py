@@ -8,7 +8,6 @@ import os
 import re
 import sys
 import time
-import unicodedata
 import urllib.parse
 import urllib.request
 
@@ -23,6 +22,10 @@ from playwright.async_api import (
 )
 
 
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
 CONFIG_PATH = Path(os.getenv("MONITOR_CONFIG", "stores.json"))
 STATE_PATH = Path(os.getenv("MONITOR_STATE", "state/prices.json"))
 REPORT_PATH = Path(os.getenv("MONITOR_REPORT", "state/last_report.json"))
@@ -36,8 +39,38 @@ PAGE_TIMEOUT_MS = int(os.getenv("PAGE_TIMEOUT_MS", "35000"))
 SCROLL_ROUNDS = int(os.getenv("SCROLL_ROUNDS", "4"))
 MAX_CANDIDATES = int(os.getenv("MAX_CANDIDATES_PER_STORE", "220"))
 
-PRICE_RE = re.compile(r"\$\s*([0-9][0-9.\s]{1,14})")
-DISCOUNT_RE = re.compile(r"(?<!\d)-\s*(\d{1,3})\s*%")
+# Precio máximo razonable en CLP.
+MAX_REASONABLE_PRICE = 30_000_000
+
+# Una referencia no puede superar 10 veces el precio actual.
+MAX_REFERENCE_MULTIPLIER = 10
+
+# Descuento calculado superior a esto se considera sospechoso.
+MAX_CALCULATED_DISCOUNT = 95.0
+
+
+# ============================================================
+# REGEX DE PRECIOS
+# ============================================================
+
+# IMPORTANTE:
+# Esta expresión NO permite espacios dentro del número.
+#
+# Correcto:
+#   $729.990
+#   $1.299.990
+#   $9990
+#
+# No convierte:
+#   "$799.990 10" -> 79.999.010
+PRICE_RE = re.compile(
+    r"\$\s*([0-9]{1,3}(?:\.[0-9]{3})+|[0-9]{4,9})(?![\d.])"
+)
+
+DISCOUNT_RE = re.compile(
+    r"(?<!\d)-?\s*(\d{1,3})\s*%"
+)
+
 WS_RE = re.compile(r"\s+")
 
 TECH_WORDS = {
@@ -47,15 +80,10 @@ TECH_WORDS = {
     "celular",
     "smartphone",
     "iphone",
-    "macbook",
-    "ipad",
-    "imac",
-    "computador",
-    "computadora",
-    "pc gamer",
-    "desktop",
     "televisor",
     "smart tv",
+    "oled",
+    "qled",
     "monitor",
     "audífono",
     "audifono",
@@ -74,9 +102,18 @@ TECH_WORDS = {
     "router",
     "impresora",
     "smartwatch",
-    "galaxy",
-    "motorola",
-    "xiaomi",
+    "refrigerador",
+    "lavadora",
+    "secadora",
+    "lavavajillas",
+    "microondas",
+    "horno eléctrico",
+    "horno electrico",
+    "freidora",
+    "aspiradora",
+    "aire acondicionado",
+    "estufa eléctrica",
+    "estufa electrica",
 }
 
 BAD_PATH_PARTS = (
@@ -98,6 +135,10 @@ BAD_PATH_PARTS = (
 )
 
 
+# ============================================================
+# MODELO
+# ============================================================
+
 @dataclass
 class Product:
     store: str
@@ -108,66 +149,94 @@ class Product:
     published_discount: Optional[float]
     raw_text: str
     sku: Optional[str] = None
-    watched_brand: Optional[str] = None
-    category: Optional[str] = None
 
 
-def now_iso():
+# ============================================================
+# UTILIDADES
+# ============================================================
+
+def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def norm(s):
-    return WS_RE.sub(" ", s or "").strip()
+def norm(value: str) -> str:
+    return WS_RE.sub(" ", value or "").strip()
 
 
-def normalize_search_text(text):
-    text = str(text or "")
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(
-        c for c in text
-        if not unicodedata.combining(c)
-    )
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return WS_RE.sub(" ", text).strip()
-
-
-def price_int(raw):
-    digits = re.sub(r"\D", "", raw or "")
-
-    if not digits:
-        return None
-
-    number = int(digits)
-
-    if 0 < number < 2_000_000_000:
-        return number
-
-    return None
-
-
-def clp(number):
-    if number is None:
+def clp(value: Optional[int]) -> str:
+    if value is None:
         return "-"
+    return "$" + f"{value:,}".replace(",", ".")
 
-    return "$" + f"{number:,}".replace(",", ".")
 
-
-def canon(url):
-    p = urllib.parse.urlsplit(url)
+def canon(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
 
     return urllib.parse.urlunsplit(
         (
-            p.scheme,
-            p.netloc.lower(),
-            p.path.rstrip("/"),
+            parsed.scheme,
+            parsed.netloc.lower(),
+            parsed.path.rstrip("/"),
             "",
             "",
         )
     )
 
 
-def infer_sku(url, text):
+def parse_clp_number(raw: str) -> Optional[int]:
+    """
+    Convierte:
+      729.990 -> 729990
+      1.299.990 -> 1299990
+
+    No concatena números separados por espacios.
+    """
+
+    if not raw:
+        return None
+
+    raw = raw.strip()
+
+    # Solo admitimos dígitos y puntos.
+    if not re.fullmatch(r"[0-9.]+", raw):
+        return None
+
+    digits = raw.replace(".", "")
+
+    if not digits.isdigit():
+        return None
+
+    value = int(digits)
+
+    if value <= 0:
+        return None
+
+    if value > MAX_REASONABLE_PRICE:
+        return None
+
+    return value
+
+
+def extract_prices(text: str) -> list[int]:
+    """
+    Extrae precios únicos en el orden en que aparecen.
+    """
+
+    values: list[int] = []
+
+    for match in PRICE_RE.finditer(text or ""):
+        value = parse_clp_number(match.group(1))
+
+        if value is None:
+            continue
+
+        if value not in values:
+            values.append(value)
+
+    return values
+
+
+def infer_sku(url: str, text: str) -> Optional[str]:
     patterns = [
         r"/product/\d+/[^/]+/(\d+)",
         r"/product/(\d+)",
@@ -175,17 +244,14 @@ def infer_sku(url, text):
         r"/(\d{7,16})p(?:$|[?#])",
         r"/(\d{7,16})\.html(?:$|[?#])",
         r"\bSKU[:\s#-]*(\d{4,18})\b",
+        r"\bPLU[:\s#-]*(\d{4,18})\b",
         r"\bMLC[- ]?(\d{6,15})\b",
     ]
 
-    combined = url + " " + text
+    combined = f"{url} {text}"
 
     for pattern in patterns:
-        match = re.search(
-            pattern,
-            combined,
-            re.I,
-        )
+        match = re.search(pattern, combined, re.I)
 
         if match:
             return match.group(1)
@@ -193,219 +259,125 @@ def infer_sku(url, text):
     return None
 
 
-def key_for(product):
+def key_for(product: Product) -> str:
     if product.sku:
         return f"{product.store}:{product.sku}"
 
-    hashed = hashlib.sha1(
-        canon(product.url).encode()
+    digest = hashlib.sha1(
+        canon(product.url).encode("utf-8")
     ).hexdigest()[:24]
 
-    return f"{product.store}:{hashed}"
+    return f"{product.store}:{digest}"
 
 
-def is_tech(name):
-    search = " " + normalize_search_text(name) + " "
-
-    return any(
-        normalize_search_text(word) in search
-        for word in TECH_WORDS
-    )
+def is_tech(name: str) -> bool:
+    text = f" {name.lower()} "
+    return any(word in text for word in TECH_WORDS)
 
 
-def find_watched_brand(
-    product,
-    brand_watchlist,
-):
-    haystack = normalize_search_text(
-        " ".join(
-            [
-                product.name,
-                product.raw_text,
-                product.url,
-                product.store,
-            ]
-        )
-    )
+# ============================================================
+# VALIDACIÓN DE PRECIO DE REFERENCIA
+# ============================================================
 
-    brands = sorted(
-        brand_watchlist,
-        key=lambda x: len(str(x)),
-        reverse=True,
-    )
+def choose_reference_price(
+    current: int,
+    prices: list[int],
+) -> Optional[int]:
 
-    for brand in brands:
-        normalized_brand = normalize_search_text(
-            brand
-        )
+    candidates = []
 
-        if not normalized_brand:
+    for price in prices:
+        if price <= current:
             continue
 
-        if normalized_brand in haystack:
-            return brand
-
-    return None
-
-
-def deduplicate_stores(stores):
-    merged = {}
-
-    for store in stores:
-        if not store.get("enabled", True):
+        # Nunca aceptar precios físicamente absurdos.
+        if price > MAX_REASONABLE_PRICE:
             continue
 
-        name = store.get(
-            "name",
-            "",
-        ).strip()
-
-        if not name:
+        # Protección contra el bug tipo:
+        # 729.990 -> referencia 79.999.010
+        if price > current * MAX_REFERENCE_MULTIPLIER:
             continue
 
-        if name not in merged:
-            merged[name] = dict(store)
+        discount = (price - current) / price * 100
 
-            merged[name]["seed_urls"] = list(
-                dict.fromkeys(
-                    store.get(
-                        "seed_urls",
-                        [],
-                    )
-                )
-            )
-
-            merged[name]["allowed_domains"] = list(
-                dict.fromkeys(
-                    store.get(
-                        "allowed_domains",
-                        [],
-                    )
-                )
-            )
-
+        # Si el descuento calculado es >95%,
+        # probablemente hubo una lectura incorrecta.
+        if discount > MAX_CALCULATED_DISCOUNT:
             continue
 
-        current = merged[name]
+        candidates.append(price)
 
-        current["seed_urls"] = list(
-            dict.fromkeys(
-                current.get(
-                    "seed_urls",
-                    [],
-                )
-                + store.get(
-                    "seed_urls",
-                    [],
-                )
-            )
-        )
+    if not candidates:
+        return None
 
-        current["allowed_domains"] = list(
-            dict.fromkeys(
-                current.get(
-                    "allowed_domains",
-                    [],
-                )
-                + store.get(
-                    "allowed_domains",
-                    [],
-                )
-            )
-        )
+    return max(candidates)
 
-        if (
-            not current.get("product_url_regex")
-            and store.get("product_url_regex")
-        ):
-            current["product_url_regex"] = (
-                store["product_url_regex"]
-            )
 
-    return list(merged.values())
-
+# ============================================================
+# PARSER DE TARJETAS DE PRODUCTO
+# ============================================================
 
 def parse_candidate(
-    store,
-    href,
-    anchor_text,
-    card_text,
-    category=None,
-):
+    store: str,
+    href: str,
+    anchor_text: str,
+    card_text: str,
+) -> Optional[Product]:
+
     href = canon(href)
     card_text = norm(card_text)
     anchor_text = norm(anchor_text)
 
-    prices = []
-
-    for raw in PRICE_RE.findall(
-        card_text
-    ):
-        number = price_int(raw)
-
-        if (
-            number is not None
-            and number not in prices
-        ):
-            prices.append(number)
+    prices = extract_prices(card_text)
 
     if not prices:
         return None
 
+    # Normalmente el primer precio visible de la tarjeta
+    # es el precio de venta.
     current = prices[0]
 
-    larger = [
-        price
-        for price in prices[1:]
-        if price > current
-    ]
+    if current <= 0 or current > MAX_REASONABLE_PRICE:
+        return None
 
-    reference = (
-        max(larger)
-        if larger
-        else None
+    reference = choose_reference_price(
+        current,
+        prices[1:],
     )
 
-    match = DISCOUNT_RE.search(
-        card_text
-    )
+    discount_match = DISCOUNT_RE.search(card_text)
 
-    if match:
-        published = float(
-            match.group(1)
-        )
+    published_discount: Optional[float] = None
 
-    elif reference:
-        published = (
-            (reference - current)
-            / reference
-            * 100
-        )
+    if discount_match:
+        published_discount = float(discount_match.group(1))
 
-    else:
-        published = None
+        # Nunca aceptar porcentajes fuera de rango.
+        if published_discount <= 0 or published_discount > 95:
+            published_discount = None
+
+    # Si la tienda no muestra porcentaje,
+    # lo calculamos solo si tenemos referencia válida.
+    if published_discount is None and reference:
+        calculated = (reference - current) / reference * 100
+
+        if 0 < calculated <= MAX_CALCULATED_DISCOUNT:
+            published_discount = calculated
 
     name = anchor_text
 
-    if (
-        not name
-        or "$" in name
-        or len(name) < 4
-    ):
+    if not name or "$" in name or len(name) < 4:
         chunks = [
-            norm(x)
-            for x in re.split(
-                r"\$|-\s*\d+%",
+            norm(part)
+            for part in re.split(
+                r"\$|-?\s*\d+%",
                 card_text,
             )
-            if norm(x)
+            if norm(part)
         ]
 
-        name = (
-            chunks[0][:180]
-            if chunks
-            else "Producto"
-        )
+        name = chunks[0][:180] if chunks else "Producto"
 
     return Product(
         store=store,
@@ -413,17 +385,17 @@ def parse_candidate(
         url=href,
         current_price=current,
         reference_price=reference,
-        published_discount=published,
+        published_discount=published_discount,
         raw_text=card_text[:1800],
-        sku=infer_sku(
-            href,
-            card_text,
-        ),
-        category=category,
+        sku=infer_sku(href, card_text),
     )
 
 
-def load_state():
+# ============================================================
+# ESTADO
+# ============================================================
+
+def load_state() -> dict:
     if not STATE_PATH.exists():
         return {
             "version": 2,
@@ -433,11 +405,8 @@ def load_state():
 
     try:
         return json.loads(
-            STATE_PATH.read_text(
-                encoding="utf-8"
-            )
+            STATE_PATH.read_text(encoding="utf-8")
         )
-
     except Exception:
         return {
             "version": 2,
@@ -446,15 +415,13 @@ def load_state():
         }
 
 
-def save_state(state):
+def save_state(state: dict) -> None:
     STATE_PATH.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    temp = STATE_PATH.with_suffix(
-        ".tmp"
-    )
+    temp = STATE_PATH.with_suffix(".tmp")
 
     temp.write_text(
         json.dumps(
@@ -465,12 +432,14 @@ def save_state(state):
         encoding="utf-8",
     )
 
-    temp.replace(
-        STATE_PATH
-    )
+    temp.replace(STATE_PATH)
 
 
-def telegram_send(text):
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+def telegram_send(text: str) -> bool:
     token = os.getenv(
         "TELEGRAM_BOT_TOKEN",
         "",
@@ -483,8 +452,7 @@ def telegram_send(text):
 
     if not token or not chat:
         print(
-            "Telegram no configurado; "
-            "alerta solo en log."
+            "Telegram no configurado; alerta solo en log."
         )
         return False
 
@@ -494,18 +462,15 @@ def telegram_send(text):
             "text": text,
             "disable_web_page_preview": "false",
         }
-    ).encode()
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=data,
+        method="POST",
+    )
 
     try:
-        request = urllib.request.Request(
-            (
-                "https://api.telegram.org/"
-                f"bot{token}/sendMessage"
-            ),
-            data=data,
-            method="POST",
-        )
-
         with urllib.request.urlopen(
             request,
             timeout=15,
@@ -514,27 +479,29 @@ def telegram_send(text):
 
         return True
 
-    except Exception as error:
+    except Exception as exc:
         print(
             "ERROR Telegram:",
-            error,
+            exc,
             file=sys.stderr,
         )
-
         return False
 
 
+# ============================================================
+# VALIDACIÓN DE URL
+# ============================================================
+
 def valid_product_url(
-    url,
-    cfg,
-):
-    parsed = urllib.parse.urlsplit(
-        url
-    )
+    url: str,
+    cfg: dict,
+) -> bool:
+
+    parsed = urllib.parse.urlsplit(url)
 
     host = parsed.netloc.lower()
 
-    allowed = [
+    allowed_domains = [
         domain.lower()
         for domain in cfg.get(
             "allowed_domains",
@@ -542,52 +509,49 @@ def valid_product_url(
         )
     ]
 
-    if allowed:
+    if allowed_domains:
         valid_domain = any(
             host == domain
-            or host.endswith(
-                "." + domain
-            )
-            for domain in allowed
+            or host.endswith("." + domain)
+            for domain in allowed_domains
         )
 
         if not valid_domain:
             return False
 
-    regex = cfg.get(
-        "product_url_regex"
-    )
+    regex = cfg.get("product_url_regex")
 
     if regex:
-        if not re.search(
-            regex,
-            url,
-            re.I,
-        ):
+        if not re.search(regex, url, re.I):
             return False
 
     else:
-        path = parsed.path.lower()
+        lower_path = parsed.path.lower()
 
         if any(
-            bad in path
-            for bad in BAD_PATH_PARTS
+            bad_part in lower_path
+            for bad_part in BAD_PATH_PARTS
         ):
             return False
 
     return (
-        parsed.scheme
-        in ("http", "https")
+        parsed.scheme in ("http", "https")
         and len(parsed.path) > 3
     )
 
 
+# ============================================================
+# SCRAPING
+# ============================================================
+
 async def scrape_store(
     browser,
-    cfg,
-    semaphore,
-):
+    cfg: dict,
+    semaphore: asyncio.Semaphore,
+) -> list[Product]:
+
     async with semaphore:
+
         context = await browser.new_context(
             locale="es-CL",
             viewport={
@@ -595,8 +559,7 @@ async def scrape_store(
                 "height": 1050,
             },
             user_agent=(
-                "Mozilla/5.0 "
-                "(X11; Linux x86_64) "
+                "Mozilla/5.0 (X11; Linux x86_64) "
                 "AppleWebKit/537.36 "
                 "Chrome/126 Safari/537.36"
             ),
@@ -604,18 +567,16 @@ async def scrape_store(
 
         page = await context.new_page()
 
-        found = {}
+        found: dict[str, Product] = {}
 
         store = cfg["name"]
-        category = cfg.get(
-            "category"
-        )
 
         try:
             for seed in cfg.get(
                 "seed_urls",
                 [],
             ):
+
                 print(
                     f"[{now_iso()}] "
                     f"{store}: {seed}"
@@ -624,52 +585,35 @@ async def scrape_store(
                 try:
                     await page.goto(
                         seed,
-                        wait_until=(
-                            "domcontentloaded"
-                        ),
-                        timeout=(
-                            PAGE_TIMEOUT_MS
-                        ),
+                        wait_until="domcontentloaded",
+                        timeout=PAGE_TIMEOUT_MS,
                     )
 
-                    await page.wait_for_timeout(
-                        1200
-                    )
+                    await page.wait_for_timeout(1200)
 
-                    for _ in range(
-                        SCROLL_ROUNDS
-                    ):
+                    for _ in range(SCROLL_ROUNDS):
                         await page.mouse.wheel(
                             0,
                             1700,
                         )
-
-                        await page.wait_for_timeout(
-                            350
-                        )
+                        await page.wait_for_timeout(350)
 
                     rows = await page.evaluate(
                         """
                         () => {
-                          const anchors =
-                            [...document.querySelectorAll(
-                              'a[href]'
-                            )];
+                          const anchors = [
+                            ...document.querySelectorAll('a[href]')
+                          ];
 
                           const out = [];
-                          const seen =
-                            new Set();
+                          const seen = new Set();
 
-                          for (
-                            const a of anchors
-                          ) {
-                            let href =
-                              a.href || '';
+                          for (const a of anchors) {
 
-                            if (
-                              !href ||
-                              seen.has(href)
-                            ) continue;
+                            const href = a.href || '';
+
+                            if (!href || seen.has(href))
+                              continue;
 
                             let node = a;
                             let chosen = null;
@@ -677,32 +621,23 @@ async def scrape_store(
                             for (
                               let i = 0;
                               i < 7 && node;
-                              i++,
-                              node =
-                                node.parentElement
+                              i++, node = node.parentElement
                             ) {
+
                               const text =
-                                (
-                                  node.innerText ||
-                                  ''
-                                ).trim();
+                                (node.innerText || '').trim();
 
                               if (
-                                text.includes('$')
-                                &&
-                                text.length >= 12
-                                &&
+                                text.includes('$') &&
+                                text.length >= 12 &&
                                 text.length <= 2600
                               ) {
                                 chosen = node;
 
                                 if (
-                                  text
-                                    .split('\\n')
-                                    .length >= 3
-                                ) {
+                                  text.split('\\n').length >= 3
+                                )
                                   break;
-                                }
                               }
                             }
 
@@ -710,17 +645,10 @@ async def scrape_store(
                               continue;
 
                             const cardText =
-                              (
-                                chosen.innerText
-                                || ''
-                              ).trim();
+                              (chosen.innerText || '').trim();
 
-                            if (
-                              !cardText
-                                .includes('$')
-                            ) {
+                            if (!cardText.includes('$'))
                               continue;
-                            }
 
                             seen.add(href);
 
@@ -728,16 +656,14 @@ async def scrape_store(
                               href,
                               anchorText:
                                 (
-                                  a.innerText
-                                  ||
+                                  a.innerText ||
                                   a.getAttribute(
                                     'aria-label'
-                                  )
-                                  ||
-                                  a.title
-                                  ||
+                                  ) ||
+                                  a.title ||
                                   ''
                                 ).trim(),
+
                               cardText
                             });
                           }
@@ -748,14 +674,12 @@ async def scrape_store(
                     )
 
                     for row in rows:
-                        if (
-                            len(found)
-                            >= MAX_CANDIDATES
-                        ):
+
+                        if len(found) >= MAX_CANDIDATES:
                             break
 
                         href = canon(
-                            row["href"]
+                            row.get("href", "")
                         )
 
                         if not valid_product_url(
@@ -775,7 +699,6 @@ async def scrape_store(
                                 "cardText",
                                 "",
                             ),
-                            category=category,
                         )
 
                         if product:
@@ -791,12 +714,12 @@ async def scrape_store(
                         file=sys.stderr,
                     )
 
-                except Exception as error:
+                except Exception as exc:
                     print(
                         "ERROR",
                         store,
                         seed,
-                        error,
+                        exc,
                         file=sys.stderr,
                     )
 
@@ -804,23 +727,24 @@ async def scrape_store(
             await context.close()
 
         print(
-            store,
-            ":",
-            len(found),
-            "productos candidatos",
+            f"{store}: "
+            f"{len(found)} productos candidatos"
         )
 
-        return list(
-            found.values()
-        )
+        return list(found.values())
 
+
+# ============================================================
+# VERIFICACIÓN DE FICHA DIRECTA
+# ============================================================
 
 async def verify_direct_url(
     browser,
-    product,
-    cfg,
-    semaphore,
-):
+    product: Product,
+    cfg: dict,
+    semaphore: asyncio.Semaphore,
+) -> bool:
+
     if not valid_product_url(
         product.url,
         cfg,
@@ -828,6 +752,7 @@ async def verify_direct_url(
         return False
 
     async with semaphore:
+
         context = await browser.new_context(
             locale="es-CL"
         )
@@ -837,21 +762,14 @@ async def verify_direct_url(
         try:
             response = await page.goto(
                 product.url,
-                wait_until=(
-                    "domcontentloaded"
-                ),
+                wait_until="domcontentloaded",
                 timeout=PAGE_TIMEOUT_MS,
             )
 
-            if (
-                response
-                and response.status >= 400
-            ):
+            if response and response.status >= 400:
                 return False
 
-            await page.wait_for_timeout(
-                700
-            )
+            await page.wait_for_timeout(700)
 
             body = norm(
                 await page.locator(
@@ -861,51 +779,42 @@ async def verify_direct_url(
                 )
             )
 
-            formatted_price = (
+            # Confirmamos el precio actual exacto.
+            formatted = (
                 f"{product.current_price:,}"
                 .replace(",", ".")
             )
 
-            body_digits = re.sub(
-                r"\D",
-                "",
-                body,
-            )
-
             price_ok = (
-                formatted_price in body
+                formatted in body
                 or str(
                     product.current_price
-                ) in body_digits
+                )
+                in re.sub(
+                    r"\D",
+                    "",
+                    body,
+                )
             )
 
             words = [
                 word.lower()
                 for word in re.findall(
-                    (
-                        r"[A-Za-zÁÉÍÓÚ"
-                        r"áéíóúÑñ0-9]{4,}"
-                    ),
+                    r"[A-Za-zÁÉÍÓÚáéíóúÑñ0-9]{4,}",
                     product.name,
                 )
             ]
 
             if not words:
                 name_ok = True
-
             else:
-                body_lower = (
-                    body.lower()
-                )
-
                 matches = sum(
-                    word in body_lower
+                    word in body.lower()
                     for word in words[:6]
                 )
 
                 name_ok = (
-                    matches
-                    >= min(
+                    matches >= min(
                         2,
                         len(words),
                     )
@@ -923,65 +832,50 @@ async def verify_direct_url(
             await context.close()
 
 
+# ============================================================
+# REGLAS DE ALERTA
+# ============================================================
+
 def alert_reason(
-    product,
-    previous,
-):
-    if product.watched_brand:
-        threshold = BRAND_THRESHOLD
-        alert_type = "brand"
+    product: Product,
+    previous: Optional[dict],
+) -> tuple[bool, dict]:
 
-    elif is_tech(
-        product.name
-    ):
-        threshold = TECH_THRESHOLD
-        alert_type = "technology"
+    threshold = (
+        TECH_THRESHOLD
+        if is_tech(product.name)
+        else DEFAULT_DISCOUNT
+    )
 
-    else:
-        threshold = DEFAULT_DISCOUNT
-        alert_type = "general"
-
-    historical_drop = None
+    historical_drop: Optional[float] = None
 
     if previous:
-        old_price = previous.get(
-            "price"
-        )
+        old_price = previous.get("price")
 
         if (
-            isinstance(
-                old_price,
-                int,
-            )
-            and old_price
-            > product.current_price
-            > 0
+            isinstance(old_price, int)
+            and old_price > product.current_price > 0
         ):
             historical_drop = (
-                (
-                    old_price
-                    - product.current_price
-                )
+                (old_price - product.current_price)
                 / old_price
                 * 100
             )
 
-    published = (
-        product.published_discount
-    )
+    published = product.published_discount
 
     historical_match = (
-        historical_drop
-        is not None
-        and historical_drop
-        >= threshold
+        historical_drop is not None
+        and historical_drop >= threshold
     )
 
     published_match = (
         published is not None
         and published >= threshold
+        and published <= MAX_CALCULATED_DISCOUNT
     )
 
+    # No repetir la misma oferta al mismo precio.
     published_new = (
         published_match
         and (
@@ -998,37 +892,25 @@ def alert_reason(
         or published_new
     )
 
-    metadata = {
+    return should_alert, {
         "threshold": threshold,
-        "alert_type": alert_type,
-        "watched_brand": (
-            product.watched_brand
-        ),
-        "historical_drop": (
-            historical_drop
-        ),
-        "published_discount": (
-            published
-        ),
-        "historical_match": (
-            historical_match
-        ),
-        "published_match": (
-            published_match
-        ),
+        "historical_drop": historical_drop,
+        "published_discount": published,
+        "historical_match": historical_match,
+        "published_match": published_match,
     }
 
-    return (
-        should_alert,
-        metadata,
-    )
 
+# ============================================================
+# MENSAJE TELEGRAM
+# ============================================================
 
 def format_alert(
-    product,
-    previous,
-    metadata,
-):
+    product: Product,
+    previous: Optional[dict],
+    meta: dict,
+) -> str:
+
     old_price = (
         previous.get("price")
         if previous
@@ -1036,32 +918,11 @@ def format_alert(
     )
 
     lines = [
-        "🚨 OFERTA / CAMBIO DE PRECIO"
+        "🚨 OFERTA / CAMBIO DE PRECIO",
+        "📂 Multitienda",
+        f"🏬 {product.store}",
+        f"📦 {product.name}",
     ]
-
-    if product.watched_brand:
-        lines.append(
-            "🔥 MARCA VIGILADA: "
-            f"{product.watched_brand}"
-        )
-
-    if product.category:
-        category_text = (
-            product.category
-            .replace("_", " ")
-            .title()
-        )
-
-        lines.append(
-            f"📂 {category_text}"
-        )
-
-    lines.extend(
-        [
-            f"🏬 {product.store}",
-            f"📦 {product.name}",
-        ]
-    )
 
     if product.sku:
         lines.append(
@@ -1069,15 +930,13 @@ def format_alert(
         )
 
     if (
-        metadata[
-            "historical_match"
-        ]
+        meta["historical_match"]
         and old_price
     ):
         lines.extend(
             [
                 (
-                    "⏱ Precio anterior: "
+                    "⏱ Precio ejecución anterior: "
                     f"{clp(old_price)}"
                 ),
                 (
@@ -1085,8 +944,8 @@ def format_alert(
                     f"{clp(product.current_price)}"
                 ),
                 (
-                    "📉 Caída real: "
-                    f"{metadata['historical_drop']:.1f}%"
+                    "📉 Caída real entre ejecuciones: "
+                    f"{meta['historical_drop']:.1f}%"
                 ),
             ]
         )
@@ -1104,19 +963,17 @@ def format_alert(
         )
 
     if (
-        metadata[
-            "published_discount"
-        ]
+        meta["published_discount"]
         is not None
     ):
         lines.append(
             "🏷 Descuento: "
-            f"{metadata['published_discount']:.1f}%"
+            f"{meta['published_discount']:.1f}%"
         )
 
     lines.append(
         "🎯 Umbral de alerta: "
-        f"{metadata['threshold']:.0f}%"
+        f"{meta['threshold']:.0f}%"
     )
 
     lines.extend(
@@ -1130,38 +987,30 @@ def format_alert(
     return "\n".join(lines)
 
 
-async def main_async():
+# ============================================================
+# MAIN
+# ============================================================
+
+async def main_async() -> int:
+
     config = json.loads(
         CONFIG_PATH.read_text(
             encoding="utf-8"
         )
     )
 
-    brand_watchlist = config.get(
-        "brand_watchlist",
-        [],
-    )
-
-    stores = deduplicate_stores(
-        config.get(
-            "stores",
-            [],
+    stores = [
+        store
+        for store in config["stores"]
+        if store.get(
+            "enabled",
+            True,
         )
-    )
-
-    print(
-        "Tiendas activas:",
-        len(stores),
-    )
-
-    print(
-        "Marcas vigiladas:",
-        len(brand_watchlist),
-    )
+    ]
 
     state = load_state()
 
-    old = state.get(
+    old_products = state.get(
         "products",
         {},
     )
@@ -1172,20 +1021,16 @@ async def main_async():
         "started_at": stamp,
         "stores": {},
         "alerts": [],
-        "brand_watchlist": (
-            brand_watchlist
-        ),
     }
 
     scrape_sem = asyncio.Semaphore(
         MAX_CONCURRENCY
     )
 
-    verify_sem = asyncio.Semaphore(
-        2
-    )
+    verify_sem = asyncio.Semaphore(2)
 
     async with async_playwright() as pw:
+
         browser = await pw.chromium.launch(
             headless=True
         )
@@ -1194,106 +1039,98 @@ async def main_async():
             *(
                 scrape_store(
                     browser,
-                    config_store,
+                    cfg,
                     scrape_sem,
                 )
-                for config_store in stores
+                for cfg in stores
             ),
             return_exceptions=True,
         )
 
-        config_by_store = {
-            store["name"]: store
-            for store in stores
+        cfg_by_name = {
+            cfg["name"]: cfg
+            for cfg in stores
         }
 
-        products = {}
+        products: dict[str, Product] = {}
 
-        for store_config, result in zip(
+        for cfg, result in zip(
             stores,
             results,
         ):
+
             if isinstance(
                 result,
                 Exception,
             ):
                 report["stores"][
-                    store_config["name"]
+                    cfg["name"]
                 ] = {
-                    "error": str(
-                        result
-                    ),
+                    "error": str(result),
                     "count": 0,
                 }
 
                 continue
 
             report["stores"][
-                store_config["name"]
+                cfg["name"]
             ] = {
-                "count": len(
-                    result
-                )
+                "count": len(result)
             }
 
             for product in result:
-                product.watched_brand = (
-                    find_watched_brand(
-                        product,
-                        brand_watchlist,
-                    )
-                )
-
                 products[
                     key_for(product)
                 ] = product
 
-        watched_found = sum(
-            1
-            for product
-            in products.values()
-            if product.watched_brand
-        )
+        for key, product in products.items():
 
-        print(
-            "Productos de marcas "
-            "vigiladas:",
-            watched_found,
-        )
+            previous = old_products.get(key)
 
-        for key, product in (
-            products.items()
-        ):
-            previous = old.get(
-                key
-            )
-
-            should_alert, metadata = (
-                alert_reason(
-                    product,
-                    previous,
-                )
+            should_alert, meta = alert_reason(
+                product,
+                previous,
             )
 
             verified = False
 
             if should_alert:
-                verified = (
-                    await verify_direct_url(
+
+                # Protección final extra:
+                # nunca mandar alerta con referencias absurdas.
+                if product.reference_price:
+
+                    if (
+                        product.reference_price
+                        > product.current_price
+                        * MAX_REFERENCE_MULTIPLIER
+                    ):
+                        print(
+                            "SKIP referencia absurda:",
+                            product.store,
+                            product.name,
+                            product.reference_price,
+                        )
+
+                        should_alert = False
+
+                if should_alert:
+
+                    verified = await verify_direct_url(
                         browser,
                         product,
-                        config_by_store[
+                        cfg_by_name[
                             product.store
                         ],
                         verify_sem,
                     )
-                )
 
                 if verified:
+
                     message = format_alert(
                         product,
                         previous,
-                        metadata,
+                        meta,
                     )
 
                     print(
@@ -1306,14 +1143,12 @@ async def main_async():
                         message
                     )
 
-                    report[
-                        "alerts"
-                    ].append(
+                    report["alerts"].append(
                         {
                             "product": asdict(
                                 product
                             ),
-                            "meta": metadata,
+                            "meta": meta,
                             "previous_price": (
                                 previous.get(
                                     "price"
@@ -1321,57 +1156,41 @@ async def main_async():
                                 if previous
                                 else None
                             ),
-                            "telegram_sent": (
-                                sent
-                            ),
+                            "telegram_sent": sent,
                         }
                     )
 
-                else:
+                elif should_alert:
                     print(
-                        "SKIP sin URL "
-                        "directa verificable:",
+                        "SKIP sin URL directa "
+                        "verificable:",
                         product.store,
                         product.name,
                         product.url,
                     )
 
-            entry = (
-                previous or {}
-            )
+            entry = previous or {}
 
-            last_price = entry.get(
+            last_alert_price = entry.get(
                 "last_alert_price"
             )
 
-            last_at = entry.get(
+            last_alert_at = entry.get(
                 "last_alert_at"
             )
 
-            if (
-                should_alert
-                and verified
-            ):
-                last_price = (
+            if should_alert and verified:
+                last_alert_price = (
                     product.current_price
                 )
+                last_alert_at = stamp
 
-                last_at = stamp
-
-            old[key] = {
+            old_products[key] = {
                 "store": product.store,
-                "category": (
-                    product.category
-                ),
-                "watched_brand": (
-                    product.watched_brand
-                ),
                 "name": product.name,
                 "url": product.url,
                 "sku": product.sku,
-                "price": (
-                    product.current_price
-                ),
+                "price": product.current_price,
                 "reference_price": (
                     product.reference_price
                 ),
@@ -1380,34 +1199,33 @@ async def main_async():
                 ),
                 "last_seen": stamp,
                 "last_alert_price": (
-                    last_price
+                    last_alert_price
                 ),
                 "last_alert_at": (
-                    last_at
+                    last_alert_at
                 ),
             }
 
         await browser.close()
 
-    now = time.time()
+    # Limpiar productos que llevan
+    # más de 45 días sin verse.
+    current_time = time.time()
 
     kept = {}
 
-    for key, entry in (
-        old.items()
-    ):
+    for key, entry in old_products.items():
+
         try:
-            seen = (
-                datetime.fromisoformat(
-                    entry["last_seen"]
-                ).timestamp()
-            )
+            seen = datetime.fromisoformat(
+                entry["last_seen"]
+            ).timestamp()
 
         except Exception:
-            seen = now
+            seen = current_time
 
         if (
-            now - seen
+            current_time - seen
             < 45 * 86400
         ):
             kept[key] = entry
@@ -1420,9 +1238,7 @@ async def main_async():
         }
     )
 
-    report[
-        "finished_at"
-    ] = now_iso()
+    report["finished_at"] = now_iso()
 
     REPORT_PATH.parent.mkdir(
         parents=True,
@@ -1442,18 +1258,14 @@ async def main_async():
         "Fin:",
         len(products),
         "productos |",
-        watched_found,
-        "de marcas vigiladas |",
-        len(
-            report["alerts"]
-        ),
+        len(report["alerts"]),
         "alertas verificadas",
     )
 
     return 0
 
 
-def main():
+def main() -> None:
     raise SystemExit(
         asyncio.run(
             main_async()
