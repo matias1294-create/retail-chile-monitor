@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}
 
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: read
@@ -50,8 +50,11 @@ jobs:
           TECH_THRESHOLD: "60"
           BRAND_THRESHOLD: "50"
 
+          REPEAT_ALERTS: "true"
+
           MAX_CONCURRENCY: "4"
-          MAX_CANDIDATES_PER_STORE: "220"
+          MAX_CANDIDATES_PER_STORE: "1000"
+
           PAGE_TIMEOUT_MS: "30000"
           SCROLL_ROUNDS: "3"
 
